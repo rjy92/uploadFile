@@ -438,3 +438,82 @@ upload_input.addEventListener('change', async function () {
 
 });
 ```
+
+
+<font color=#FF000 >**并行实现暂停上传**</font>
+```js
+const controller = new AbortController();
+req.signal = controller.signal
+controller.abort()
+```
+```js
+// 切片加工（上传前预处理 为文件添加hash等）
+async handleUpload() {
+  if (!this.container.file) return;
+  // 切片生成
+  const fileChunkList = this.createFileChunk(this.container.file);
+  // 文件hash生成
+  this.container.hash = await this.calculateHash(fileChunkList);
+    
+  // hash验证 (verify为后端验证接口请求)
+  const { haveExisetd, uploadedList } = await verify(this.container.hash)
+  // 判断
+  if(haveExisetd) {
+  	this.$message.success("秒传：上传成功") 
+    return   
+  } 
+   
+  this.data = fileChunkList.map(({ file }，index) => ({
+    chunk: file,
+    // 注：这个是切片hash   这里的hash为文件名 + 切片序号，也可以用md5对文件进行加密获取唯一hash值来代替文件名
+    hash: this.container.hash + "-" + index
+  }));
+  await this.uploadChunks(uploadedList);
+}
+
+
+// 上传切片
+async uploadChunks(uploadedList = []) {
+ // 需要把requestList放到全局，因为要通过操控requestList来实现中断
+ this.requestList = this.data
+    // 过滤出来未上传的切片
+   .filter(({ hash }) => !uploadedList.includes(hash))
+ 	// 构造formData
+   .map(({ chunk，hash }) => {
+     const formData = new FormData();
+     formData.append("chunk", chunk);
+     formData.append("hash", hash);
+     formData.append("filename", this.container.file.name);
+     return { formData };
+   })
+ 	// 发送请求 上传切片
+   .map(async ({ formData }, index) =>
+     request(formData).then(() => {
+       // 将请求成功的请求剥离出requestList
+       this.requestList.splice(index, 1)
+     })
+   );
+ await Promise.all(this.requestList); // 等待全部切片上传完毕
+ // 合并之前添加一层验证 验证全部切片传送完毕
+ if(uploadedList.length + this.requestList.length == this.data.length){
+	await merge(this.container.file.name) // 发送请求合并文件
+ }
+},
+    
+// 暂停上传   
+handlePause() {
+	this.requestList.forEach((req) => {
+        // 为每个请求新建一个AbortController实例
+     	const controller = new AbortController();
+        req.signal = controller.signal
+        controller.abort()
+    })
+}
+
+// 恢复上传
+async handleRecovery() {
+    //获取已上传切片列表 (verify为后端验证接口请求)
+	const { uploadedList } = await verify(this.container.hash)
+    await uploadChunks(uploadedList)
+}
+```
